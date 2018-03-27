@@ -60,7 +60,7 @@ class CopyToolBase(object, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def copy_dir_files_to_dir(self, src_dir, trg_dir, link_dest=False, ignore=None):
         """ Copy the files of src_dir into trg_dir.
-            Example: copy_dir_files_to_dir("a", "/d/c/b") copies
+            Example: copy_dir_contents_to_dir("a", "/d/c/b") copies
             all files from a into "/d/c/b", subfolders of a are not copied
         """
         pass
@@ -264,10 +264,8 @@ class PlatformSpecificHelperBase(object):
         pass
 
     @abc.abstractmethod
-    def rmfile(self, a_file, quote_char='"', check_exist=False):
-        """ platform specific rm file
-        :param quote_char:
-        """
+    def rmfile(self, a_file, check_exist=False):
+        """ platform specific rm file """
         pass
 
     @abc.abstractmethod

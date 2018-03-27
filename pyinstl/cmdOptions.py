@@ -32,7 +32,7 @@ class CommandLineOptions(object):
         self.credentials = None
         self.base_url = None
         self.file_sizes_file = None
-        self.which_revision = None
+        self.all_revisions = None
         self.define = None
         self.dock_item_path = None
         self.dock_item_label = None
@@ -374,13 +374,13 @@ def prepare_args_parser(in_command):
                                 dest='no_wtar_artifacts',
                                 help="remove all .wtar files and .done files")
     elif in_command in ('create-links', 'up2s3'):
-        which_revision_options = command_parser.add_argument_group(description=in_command+' arguments:')
-        which_revision_options.add_argument('--revision',
+        all_revisions_options = command_parser.add_argument_group(description=in_command+' arguments:')
+        all_revisions_options.add_argument('--all-revisions',
                                 required=False,
-                                nargs=1,
                                 default=False,
-                                dest='which_revision',
-                                help="all==work on all revisions even if above repo-rev, num=work on specific revision")
+                                action='store_true',
+                                dest='all_revisions',
+                                help="work on all revisions even if above repo-rev")
 
     elif 'ls' == in_command:
         ls_options = command_parser.add_argument_group(description='output_format arguments:')

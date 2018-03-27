@@ -72,8 +72,7 @@ class PlatformSpecificHelperLinux(PlatformSpecificHelperBase):
         return rmdir_command
 
     def rmfile(self, a_file):
-        quoted_a_file = utils.quote_path_properly(a_file)
-        rmfile_command = " ".join(("rm", "-f", quoted_a_file))
+        rmfile_command = " ".join(("rm", "-f", utils.quoteme_double(a_file) ))
         return rmfile_command
 
     def get_svn_folder_cleanup_instructions(self):
