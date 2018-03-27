@@ -215,7 +215,7 @@ class InstlMisc(InstlInstanceBase):
                     where_to_unwtar_the_file = os.path.join(where_to_unwtar, tail_folder)
                 for a_file in files:
                     a_file_path = os.path.join(root, a_file)
-                    if utils.is_first_wtar_file(a_file_path):
+                    if utils.is_first_wtar_file(a_file_path) and not a_file.startswith("."):
                         utils.unwtar_a_file(a_file_path, where_to_unwtar_the_file, no_artifacts=self.no_artifacts, ignore=ignore_files)
 
         else:
