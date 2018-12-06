@@ -30,6 +30,7 @@ from .reportingBatchCommands import PythonBatchRuntime
 from .reportingBatchCommands import RaiseException
 from .reportingBatchCommands import PythonDoSomething
 from .reportingBatchCommands import ResolveConfigVarsInFile
+from .reportingBatchCommands import ReadConfigVarsFromFile
 
 from .removeBatchCommands import RmDir
 from .removeBatchCommands import RmFile

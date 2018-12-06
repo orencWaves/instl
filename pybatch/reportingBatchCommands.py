@@ -300,10 +300,26 @@ class ResolveConfigVarsInFile(PythonBatchCommandBase, essential=True):
 
     def __call__(self, *args, **kwargs) -> None:
         if self.config_file is not None:
-            reader = ConfigVarYamlReader()
+            reader = ConfigVarYamlReader(config_vars)
             reader.read_yaml_file(self.config_file)
         with utils.utf8_open(self.unresolved_file, "r") as rfd:
             text_to_resolve = rfd.read()
         resolved_text = config_vars.resolve_str(text_to_resolve)
         with utils.utf8_open(self.resolved_file, "w") as wfd:
             wfd.write(resolved_text)
+
+
+class ReadConfigVarsFromFile(PythonBatchCommandBase, essential=True):
+    def __init__(self, file_to_read, **kwargs):
+        super().__init__(**kwargs)
+        self.file_to_read = file_to_read
+
+    def repr_own_args(self, all_args: List[str]) -> None:
+        all_args.append(self.unnamed__init__param(self.file_to_read))
+
+    def progress_msg_self(self) -> str:
+        return f'''reading configVars from {self.file_to_read}'''
+
+    def __call__(self, *args, **kwargs) -> None:
+        reader = ConfigVarYamlReader(config_vars)
+        reader.read_yaml_file(self.file_to_read)
