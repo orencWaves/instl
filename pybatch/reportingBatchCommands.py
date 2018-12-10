@@ -214,7 +214,7 @@ class ConfigVarAssign(PythonBatchCommandBase, essential=False, call__call__=Fals
                 try:
                     adjusted_values.append(int(val))
                 except:
-                    adjusted_values.append(utils.quoteme_raw_string(val))
+                    adjusted_values.append(utils.quoteme_raw_by_type(val))
             if len(adjusted_values) == 1:
                 the_repr = f'''config_vars['{self.var_name}'] = {adjusted_values[0]}'''
             else:

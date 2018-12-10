@@ -80,7 +80,7 @@ if sys.platform == "win32":
     from .WinOnlyBatchCommands import CreateRegistryValues
     from .WinOnlyBatchCommands import DeleteRegistryKey
     from .WinOnlyBatchCommands import DeleteRegistryValues
-    from .WinOnlyBatchCommands import ResHacker
+    from .WinOnlyBatchCommands import ResHackerAddResource
 
 if sys.platform == "darwin":
     from .MacOnlyBatchCommands import CreateSymlink
