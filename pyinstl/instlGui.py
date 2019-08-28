@@ -22,6 +22,8 @@ import aYaml
 from .instlInstanceBase import InstlInstanceBase
 from configVar import config_vars
 
+tk_global_master = Tk()
+
 if getattr(os, "setsid", None):
     default_font_size = 17  # for Mac
 else:
@@ -39,55 +41,84 @@ admin_command_template_variables = {
 }
 
 
-class TkConfigVar(Variable):
-    """ bridge between tkinter StringVar to instl ConfigVar."""
-    convert_type_func = None
-    _default = None
+def CreateTkConfigClass(TkBase, convert_type_func):
+    """ creates a class that connects between Tk Variable class (StringVar, intVar,...)
+        and ConfigVar. The value is kept in the ConfigVar and this class overrides Variable.set/get
+        to actually get or set from the ConfigVar. Variable.set is still called so to support
+        Variable.trace("w") operations
+    """
+    class TkConfigVar(TkBase):
+        """ bridge between tkinter StringVar to instl ConfigVar."""
 
-    def __init_subclass__(cls, convert_type_func, _default, **kwargs):
-        super().__init_subclass__(**kwargs)
-        cls.convert_type_func = convert_type_func
-        cls._default = _default
+        def __init__(self, config_var_name, master=None, value=None, debug_var=False):
+            TkBase.__init__(self, master, value, config_var_name)
+            self.debug_var = debug_var
+            self.convert_type_func = convert_type_func
+            self.config_var_name = config_var_name
+            config_vars.setdefault(self.config_var_name, value)  # create a ConfigVar is one does not exists
+            # call set_callback_when_value_is_set because config_vars.setdefault will not assign the callback is the confiVar already exists
+            config_vars[self.config_var_name].set_callback_when_value_is_set(self._config_var_set_value_callback)
+            if self.debug_var:
+                print(f"TkConfigVar.__init__({self.config_var_name})")
 
-    def __init__(self, config_var_name, master=None, value=None):
-        self.config_var_name = config_var_name
-        if value is None:
-            value = config_vars.get(self.config_var_name, self._default)
-        else:
+        def _config_var_set_value_callback(self, var_name, new_var_value):
+            """ ConfigVar will call this callback every time a value has been assigned """
+            TkBase.set(self, self.convert_type_func(new_var_value))
+
+        def _get_value_from_config_var(self):
+            retVal = self.convert_type_func(config_vars.get(self.config_var_name, self.convert_type_func()))
+            return retVal
+
+        def get(self):
+            retVal = self._get_value_from_config_var()
+            if self.debug_var:
+                print(f"TkConfigVar.get({self.config_var_name}) -> {retVal}")
+            return retVal
+
+        def set(self, value):
             config_vars[self.config_var_name] = value
-        Variable.__init__(self, master, value, config_var_name)
+            if self.debug_var:
+                print(f"TkConfigVar.set({self.config_var_name}) <- {value}")
 
-    def value_from_config_var(self):
-        retVal = self.convert_type_func(str(config_vars.get(self.config_var_name, self._default)))
-        return retVal
-
-    def get(self):
-        retVal = self.value_from_config_var()
-        return retVal
-
-    def set(self, value):
-        config_vars[self.config_var_name] = value
-        Variable.set(self, value)
-
-    def realign_from_config_var(self):  # in case we know the configVar changed
-        value = self.value_from_config_var()
-        Variable.set(self, value)
-
-    def realign_from_tk_var(self):  # in case we know the tk changed
-        config_vars[self.config_var_name] = Variable.get(self)
+    return TkConfigVar
 
 
-class TkConfigVarStr(TkConfigVar, convert_type_func=str, _default=""):
-    pass
+TkConfigVarStr  = CreateTkConfigClass(StringVar, str)
+TkConfigVarInt  = CreateTkConfigClass(IntVar, int)
+TkConfigVarBool = CreateTkConfigClass(BooleanVar, bool)
 
 
-class TkConfigVarInt(TkConfigVar, convert_type_func=int, _default=0):
-    pass
+def tk_var_to_config_var_trace_helper(*args, **kwargs):
+    """ Glue functions for some special cases:
+        Some Tk widgets accepts only a true IntVar, and not one derived from InsVar
+        so usage of TkConfigVarInt is not possible. Such IntVar should be set with a
+        trace function that updates the associated configVar. Usage example:
+        self.tk_vars["CLIENT_GUI_RUN_BATCH"].trace('w', functools.partial(tk_var_to_config_var_trace_helper, tk_var=self.tk_vars["CLIENT_GUI_RUN_BATCH"]))
+
+    """
+    name = args[0]
+    tk_var = kwargs['tk_var']  # assuming the original IntVar is supplied in kwargs['tk_var']
+    new_value = tk_var.get()
+    config_vars[name] = new_value
 
 
-# failed to make TkConfigVarBool work: Checkbutton does not call the set function
-class TkConfigVarBool(TkConfigVar, convert_type_func=bool, _default=False):
-    pass
+def config_var_tk_var_to_trace_helper(name, new_value, **kwargs):
+    """ Glue functions for some special cases:
+        Some Tk widgets accepts only a true IntVar, and not one derived from IntVar
+        so usage of TkConfigVarInt is not possible. The ConfigVar should be set with a
+        callback function that updates the associated IntVar. Usage example:
+        config_vars["CLIENT_GUI_RUN_BATCH"].set_callback_when_value_is_set(functools.partial(config_var_tk_var_to_trace_helper, tk_var=self.tk_vars["CLIENT_GUI_RUN_BATCH"]))
+    """
+    tk_var = kwargs['tk_var']  # assuming the original IntVar is supplied in kwargs['tk_var']
+    tk_var.set(new_value)
+
+
+def IntVar_with_trace(name):
+    """ create an IntVar with full configVar trace fixes: tk_var_to_config_var_trace_helper, config_var_tk_var_to_trace_helper """
+    retVal = IntVar(name=name)
+    retVal.trace('w', functools.partial(tk_var_to_config_var_trace_helper, tk_var=retVal))
+    config_vars[name].set_callback_when_value_is_set(functools.partial(config_var_tk_var_to_trace_helper, tk_var=retVal))
+    return retVal
 
 
 class FrameController:
@@ -109,16 +140,8 @@ class FrameController:
                 self.master.clipboard_append(value)
                 log.info("instl command was copied to clipboard!")
 
-    def realign_from_config_vars(self):
-        for v in self.tk_vars.values():
-            v.realign_from_config_var()
-
-    def realign_from_tk_vars(self):
-        for v in self.tk_vars.values():
-            v.realign_from_tk_var()
-
     def update_state(self, *args, **kwargs):
-        self.realign_from_tk_vars()
+        print(f"{kwargs.get('who', '?')} initiated update_state")
 
     def open_file_dialog(self, config_var_name):
         import tkinter.filedialog
@@ -126,7 +149,6 @@ class FrameController:
         retVal = tkinter.filedialog.askopenfilename()
         if retVal:
             self.tk_vars[config_var_name].set(retVal)
-            self.update_state()
 
     def save_file_dialog(self, config_var_name):
         import tkinter.filedialog
@@ -134,15 +156,14 @@ class FrameController:
         retVal = tkinter.filedialog.asksaveasfilename()
         if retVal:
             self.tk_vars[config_var_name].set(retVal)
-            self.update_state()
 
     def create_line_for_file(self, curr_row, curr_column, label, var_name, locate=True, save_as=False, edit=True, check=False, combobox=None):
+
         Label(self.frame, text=label).grid(row=curr_row, column=curr_column, sticky=E)
         curr_column += 1
 
         if combobox:
             combobox.grid(row=curr_row, column=curr_column, columnspan=1, sticky="WE")
-            self.tk_vars[var_name].trace('w', self.update_state)
         else:
             Entry(self.frame, textvariable=self.tk_vars[var_name]).grid(row=curr_row, column=curr_column, columnspan=1, sticky="WE")
         curr_column += 1
@@ -215,12 +236,11 @@ class ClientFrameController(FrameController):
     def __init__(self, instl_obj):
         super().__init__("Client", instl_obj)
         self.tk_vars["CLIENT_GUI_CMD"] = TkConfigVarStr("CLIENT_GUI_CMD")
-        self.tk_vars["CLIENT_GUI_IN_FILE"] = TkConfigVarStr("CLIENT_GUI_IN_FILE")
+        self.tk_vars["CLIENT_GUI_IN_FILE"] = TkConfigVarStr("CLIENT_GUI_IN_FILE", debug_var=True)
         self.tk_vars["CLIENT_GUI_OUT_FILE"] = TkConfigVarStr("CLIENT_GUI_OUT_FILE")
-        self.tk_vars["CLIENT_GUI_RUN_BATCH"] = TkConfigVarInt("CLIENT_GUI_RUN_BATCH")
+        self.tk_vars["CLIENT_GUI_RUN_BATCH"] = IntVar_with_trace(name="CLIENT_GUI_RUN_BATCH")
         self.tk_vars["CLIENT_GUI_CREDENTIALS"] = TkConfigVarStr("CLIENT_GUI_CREDENTIALS")
-        self.tk_vars["CLIENT_GUI_CREDENTIALS"] = TkConfigVarStr("CLIENT_GUI_CREDENTIALS")
-        self.tk_vars["CLIENT_GUI_CREDENTIALS_ON"] = TkConfigVarInt("CLIENT_GUI_CREDENTIALS_ON")
+        self.tk_vars["CLIENT_GUI_CREDENTIALS_ON"] = IntVar_with_trace(name="CLIENT_GUI_CREDENTIALS_ON")
         self.client_input_combobox = None
         self.client_run_batch_file_checkbox = None
 
@@ -233,8 +253,6 @@ class ClientFrameController(FrameController):
             self.client_input_combobox.configure(values=dir_items)
 
     def update_state(self, *args, **kwargs):  # ClientFrameController
-        if len(args) or len(kwargs):
-            pass
         super().update_state(*args, **kwargs)
         self.update_client_input_file_combo()
 
@@ -264,34 +282,33 @@ class ClientFrameController(FrameController):
         command_label = Label(self.frame, text="Command:")
         command_label.grid(row=curr_row, column=0, sticky=W)
 
-        self.realign_from_config_vars()
-
         # instl command selection
         client_command_list = list(config_vars["__CLIENT_GUI_CMD_LIST__"])
         OptionMenu(self.frame, self.tk_vars["CLIENT_GUI_CMD"],
-                   self.tk_vars["CLIENT_GUI_CMD"].get(), *client_command_list, command=self.update_state).grid(row=curr_row, column=1, sticky=W)
+                   self.tk_vars["CLIENT_GUI_CMD"].get(), *client_command_list, command=functools.partial(self.update_state, who="CLIENT_GUI_CMD")).grid(row=curr_row, column=1, sticky=W)
 
         self.client_run_batch_file_checkbox = Checkbutton(self.frame, text="Run batch file",
-                    variable=self.tk_vars["CLIENT_GUI_RUN_BATCH"], command=self.update_state)
+                    variable=self.tk_vars["CLIENT_GUI_RUN_BATCH"], command=functools.partial(self.update_state, who="CLIENT_GUI_RUN_BATCH"))
         self.client_run_batch_file_checkbox.grid(row=curr_row, column=1, sticky=E)
 
         # path to input file
         curr_row += 1
+        self.tk_vars["CLIENT_GUI_IN_FILE"].trace('w', functools.partial(self.update_state, who="CLIENT_GUI_IN_FILE"))
         self.client_input_combobox = Combobox(self.frame, textvariable=self.tk_vars["CLIENT_GUI_IN_FILE"])
         self.create_line_for_file(curr_row=curr_row, curr_column=0, label="Input file:", var_name="CLIENT_GUI_IN_FILE", locate=True, edit=True, check=True, combobox=self.client_input_combobox)
 
         # path to output file
         curr_row += 1
+        self.tk_vars["CLIENT_GUI_OUT_FILE"].trace('w', functools.partial(self.update_state, who="CLIENT_GUI_OUT_FILE"))
         self.create_line_for_file(curr_row=curr_row, curr_column=0, label="Batch file:", var_name="CLIENT_GUI_OUT_FILE", locate=True, save_as=True, edit=True, check=False, combobox=None)
 
         # s3 user credentials
         curr_row += 1
         Label(self.frame, text="Credentials:").grid(row=curr_row, column=0, sticky=E)
         Entry(self.frame, textvariable=self.tk_vars["CLIENT_GUI_CREDENTIALS"]).grid(row=curr_row, column=1, columnspan=1, sticky="WE")
-        self.tk_vars["CLIENT_GUI_CREDENTIALS"].trace('w', self.update_state)
+        self.tk_vars["CLIENT_GUI_CREDENTIALS"].trace('w', functools.partial(self.update_state, who="CLIENT_GUI_CREDENTIALS"))
 
-        Checkbutton(self.frame, text="", variable=self.tk_vars["CLIENT_GUI_CREDENTIALS_ON"]).grid(row=curr_row, column=2, sticky=W)
-        self.tk_vars["CLIENT_GUI_CREDENTIALS_ON"].trace('w', self.update_state)
+        Checkbutton(self.frame, text="", variable=self.tk_vars["CLIENT_GUI_CREDENTIALS_ON"], command=functools.partial(self.update_state, who="CLIENT_GUI_CREDENTIALS_ON")).grid(row=curr_row, column=2, sticky=W)
 
         # the combined client command line text
         curr_row += 1
@@ -317,7 +334,8 @@ class ClientFrameController(FrameController):
                 retVal.append("--credentials")
                 retVal.append(credentials)
 
-        if self.tk_vars["CLIENT_GUI_RUN_BATCH"].get() == 1:
+        run_batch_state = self.tk_vars["CLIENT_GUI_RUN_BATCH"].get()
+        if run_batch_state == 1:
             retVal.append("--run")
 
         if 'Win' in list(config_vars["__CURRENT_OS_NAMES__"]):
@@ -327,7 +345,7 @@ class ClientFrameController(FrameController):
         return retVal
 
     def run_client(self):
-        self.update_state()
+        self.update_state(who="ClientFrameController.run_client")
         command_line_parts = self.create_client_command_line()
         resolved_command_line_parts = config_vars.resolve_list_to_list(command_line_parts)
 
@@ -353,7 +371,7 @@ class AdminFrameController(FrameController):
         self.tk_vars["SYNC_BASE_URL"] = TkConfigVarStr("SYNC_BASE_URL")
         self.tk_vars["DISPLAY_SVN_URL_AND_REPO_REV"] = TkConfigVarStr("DISPLAY_SVN_URL_AND_REPO_REV")
         self.tk_vars["ADMIN_GUI_LIMIT"] = TkConfigVarStr("ADMIN_GUI_LIMIT")
-        self.tk_vars["ADMIN_GUI_RUN_BATCH"] = TkConfigVarInt("ADMIN_GUI_RUN_BATCH")
+        self.tk_vars["ADMIN_GUI_RUN_BATCH"] = IntVar_with_trace(name="ADMIN_GUI_RUN_BATCH")
         self.limit_path_entry_widget = None
         self.admin_run_batch_file_checkbox = None
 
@@ -398,24 +416,24 @@ class AdminFrameController(FrameController):
         curr_row = 0
         Label(self.frame, text="Command:").grid(row=curr_row, column=0, sticky=E)
 
-        self.realign_from_config_vars()
-
         # instl command selection
         admin_command_list = list(config_vars["__ADMIN_GUI_CMD_LIST__"])
         commandNameMenu = OptionMenu(self.frame, self.tk_vars["ADMIN_GUI_CMD"],
                                      self.tk_vars["ADMIN_GUI_CMD"].get(), *admin_command_list,
-                                     command=self.update_state)
+                                     command=functools.partial(self.update_state, who="ADMIN_GUI_CMD"))
         commandNameMenu.grid(row=curr_row, column=1, sticky=W)
         ToolTip(commandNameMenu, msg="instl admin command")
 
-        self.admin_run_batch_file_checkbox = Checkbutton(self.frame, text="Run batch file", variable=self.tk_vars["ADMIN_GUI_RUN_BATCH"], command=self.update_state)
+        self.admin_run_batch_file_checkbox = Checkbutton(self.frame, text="Run batch file", variable=self.tk_vars["ADMIN_GUI_RUN_BATCH"], command=functools.partial(self.update_state, who="ADMIN_GUI_RUN_BATCH"))
         self.admin_run_batch_file_checkbox.grid(row=curr_row, column=1, columnspan=1, sticky=E)
 
         # path to config files
 
         curr_row += 1
-        self.create_line_for_file(curr_row=curr_row, curr_column=0, label=f"target config file:", var_name="ADMIN_GUI_LOCAL_CONFIG_FILE", locate=True, edit=True, check=True, combobox=None)
+        self.tk_vars["ADMIN_GUI_TARGET_CONFIG_FILE"].trace('w', functools.partial(self.update_state, who="ADMIN_GUI_TARGET_CONFIG_FILE"))
+        self.create_line_for_file(curr_row=curr_row, curr_column=0, label=f"target config file:", var_name="ADMIN_GUI_TARGET_CONFIG_FILE", locate=True, edit=True, check=True, combobox=None)
         curr_row += 1
+        self.tk_vars["ADMIN_GUI_LOCAL_CONFIG_FILE"].trace('w', functools.partial(self.update_state, who="ADMIN_GUI_LOCAL_CONFIG_FILE"))
         self.create_line_for_file(curr_row=curr_row, curr_column=0, label=f"local config file:", var_name="ADMIN_GUI_LOCAL_CONFIG_FILE", locate=True, edit=True, check=True, combobox=None)
 
         # path to stage index file
@@ -447,6 +465,7 @@ class AdminFrameController(FrameController):
 
         # path to output file
         curr_row += 1
+        self.tk_vars["ADMIN_GUI_OUT_BATCH_FILE"].trace('w', functools.partial(self.update_state, who="ADMIN_GUI_OUT_BATCH_FILE"))
         self.create_line_for_file(curr_row=curr_row, curr_column=0, label="Batch file:", var_name="ADMIN_GUI_OUT_BATCH_FILE", locate=True, save_as=True, edit=True, check=False)
 
         # relative path to limit folder
@@ -456,12 +475,12 @@ class AdminFrameController(FrameController):
         ADMIN_GUI_LIMIT_values = list(filter(None, ADMIN_GUI_LIMIT_values))
         self.limit_path_entry_widget = Entry(self.frame, textvariable=self.tk_vars["ADMIN_GUI_LIMIT"])
         self.limit_path_entry_widget.grid(row=curr_row, column=1, columnspan=1, sticky=W)
-        self.tk_vars["ADMIN_GUI_LIMIT"].trace('w', self.update_state)
+        self.tk_vars["ADMIN_GUI_LIMIT"].trace('w', functools.partial(self.update_state, who="ADMIN_GUI_LIMIT"))
 
         # the combined command line text
         curr_row += 1
         Button(self.frame, width=6, text="run:", command=self.run_admin).grid(row=curr_row, column=0, sticky=N)
-        self.text_widget = Text(self.frame, height=7, font=("Courier", default_font_size), width=40)
+        self.text_widget = Text(self.frame, height=9, font=("Courier", default_font_size), width=40)
         self.text_widget.grid(row=curr_row, column=1, columnspan=1, sticky=W)
         self.text_widget.configure(state='disabled')
 
@@ -494,8 +513,9 @@ class AdminFrameController(FrameController):
                 retVal.insert(0, sys.executable)
 
         return retVal
+
     def run_admin(self):
-        self.update_state()
+        self.update_state(who="AdminFrameController.run_admin")
         command_line_parts = self.create_admin_command_line()
         resolved_command_line_parts = [shlex.quote(p) for p in config_vars.resolve_list_to_list(command_line_parts)]
 
@@ -518,115 +538,144 @@ class ActivateFrameController(FrameController):
         self.tk_vars["ACTIVATE_CONFIG_FILE"] = TkConfigVarStr("ACTIVATE_CONFIG_FILE")
         self.tk_vars["DOMAIN_REPO_TO_ACTIVATE"] = TkConfigVarStr("DOMAIN_REPO_TO_ACTIVATE")
         self.tk_vars["REDIS_KEY_VALUE_1"] = TkConfigVarStr("REDIS_KEY_VALUE_1")
-        self.tk_vars["REPO_REV_TO_ACTIVATE"] = TkConfigVarInt("REPO_REV_TO_ACTIVATE")
+        self.tk_vars["REPO_REV_TO_ACTIVATE"] = TkConfigVarStr("REPO_REV_TO_ACTIVATE")
         self.tk_vars["REDIS_KEY_VALUE_2"] = TkConfigVarStr("REDIS_KEY_VALUE_2")
         self.redis_conn: utils.RedisClient = None
+        self.update_redis_table_working_id = None
+
+    def read_activate_config_files(self):
+        for config_file_var in ("ACTIVATE_CONFIG_FILE", ):
+            config_path = str(config_vars.get(config_file_var, ""))
+            if config_path:
+                if os.path.isfile(config_path):
+                    config_vars[ "__SEARCH_PATHS__"].clear() # so __include__ file will not be found on old paths
+                    self.instl_obj.read_yaml_file(config_path)
+                else:
+                    log.info(f"""File not found: {config_path}""")
 
     def update_state(self, *args, **kwargs):
         super().update_state(*args, **kwargs)
+        self.read_activate_config_files()
 
-        host = config_vars["REDIS_HOST"].str()
-        port = config_vars["REDIS_PORT"].int()
+        host = config_vars.get("REDIS_HOST", "").str()
+        port = config_vars.get("REDIS_PORT", 0).int()
 
         if self.redis_conn is not None:
             if self.redis_conn.host != host or self.redis_conn.port != port:
+                self.stop_update_redis_table()
+                log.info(f"disconnected from redis host: {self.redis_conn.host}, port: {self.redis_conn.port}")
+                self.redis_conn.close()
                 self.redis_conn = None
-        if self.redis_conn is None:
+        if self.redis_conn is None and host and port:
             self.redis_conn = utils.RedisClient(host, port)
+            log.info(f"connected to redis host: {self.redis_conn.host}, port: {self.redis_conn.port}")
+            self.start_update_redis_table()
 
     def update_redis_table(self):
-        self.update_state()
-        unified_dict = defaultdict(dict)
+        if self.redis_conn is not None:
+            unified_dict = defaultdict(dict)
 
-        active_repo_rev_keys = self.redis_conn.keys("wv:*:*:active_repo_rev")
-        for active_repo_rev_key in active_repo_rev_keys:
-            active_repo_rev_value = self.redis_conn.get(active_repo_rev_key)
-            splited = active_repo_rev_key.split(":")
-            domain = splited[1]
-            major_version = splited[2]
-            if major_version not in unified_dict[domain]:
-                unified_dict[domain][major_version] = dict()
-            unified_dict[domain][major_version]['activated'] = active_repo_rev_value
+            active_repo_rev_keys = self.redis_conn.keys(str(config_vars["ACTIVATE_REPO_REV_WILDCARD"]))
+            for active_repo_rev_key in active_repo_rev_keys:
+                active_repo_rev_value = self.redis_conn.get(active_repo_rev_key)
+                splited = active_repo_rev_key.split(":")
+                domain = splited[1]
+                major_version = splited[2]
+                if major_version not in unified_dict[domain]:
+                    unified_dict[domain][major_version] = dict()
+                unified_dict[domain][major_version]['activated'] = active_repo_rev_value
 
-        last_uploaded_repo_rev_keys = self.redis_conn.keys("wv:*:*:last_uploaded_repo_rev")
-        for last_uploaded_repo_rev_key in last_uploaded_repo_rev_keys:
-            last_uploaded_repo_rev_value = self.redis_conn.get(last_uploaded_repo_rev_key)
-            splited = last_uploaded_repo_rev_key.split(":")
-            domain = splited[1]
-            major_version = splited[2]
-            if major_version not in unified_dict[domain]:
-                unified_dict[domain][major_version] = dict()
-            unified_dict[domain][major_version]['uploaded'] = last_uploaded_repo_rev_value
+            last_uploaded_repo_rev_keys = self.redis_conn.keys(str(config_vars["UPLOAD_REPO_REV_WILDCARD"]))
+            for last_uploaded_repo_rev_key in last_uploaded_repo_rev_keys:
+                last_uploaded_repo_rev_value = self.redis_conn.get(last_uploaded_repo_rev_key)
+                splited = last_uploaded_repo_rev_key.split(":")
+                domain = splited[1]
+                major_version = splited[2]
+                if major_version not in unified_dict[domain]:
+                    unified_dict[domain][major_version] = dict()
+                unified_dict[domain][major_version]['uploaded'] = last_uploaded_repo_rev_value
 
-        current_items = self.tree.get_children()
-        for domain_key, domain_dict in unified_dict.items():
-            for major_version_key, major_version_dict in domain_dict.items():
-                activated = major_version_dict.get('activated', "N/A")
-                uploaded = major_version_dict.get('uploaded', "N/A")
-                item_id = f"{domain_key}:{major_version_key}"
-                if item_id in current_items:
-                    self.tree.item(item_id, text=domain_key, values=(major_version_key, uploaded, activated))
-                else:
-                    self.tree.insert('', 'end', item_id, text=domain_key, values=(major_version_key, uploaded, activated))
+            current_items = list(self.tree.get_children())
+            for domain_key, domain_dict in unified_dict.items():
+                for major_version_key, major_version_dict in domain_dict.items():
+                    activated = major_version_dict.get('activated', "N/A")
+                    uploaded = major_version_dict.get('uploaded', "N/A")
+                    item_id = f"{domain_key}:{major_version_key}"
+                    if item_id in current_items:
+                        self.tree.item(item_id, text=domain_key, values=(major_version_key, uploaded, activated))
+                        current_items.remove(item_id)
+                    else:
+                        self.tree.insert('', 'end', item_id, text=domain_key, values=(major_version_key, uploaded, activated))
 
-        focused_item = self.tree.focus()
-        if focused_item != self.tree_focused_item:
-            self.tree_focused_item = focused_item
-            if self.tree_focused_item:
-                focused_item_values = self.tree.item(self.tree_focused_item)
-                new_value = ":".join((focused_item_values['text'], str(focused_item_values['values'][0])))
-                self.tk_vars["DOMAIN_REPO_TO_ACTIVATE"].set(new_value)
-                uploaded_rep_rev = focused_item_values['values'][1]
-                activated_rep_rev = int(focused_item_values['values'][2])
-                self.tk_vars["REPO_REV_TO_ACTIVATE"].set(uploaded_rep_rev)
+            # clean leftovers
+            for left_over_id in current_items:
+                self.tree.delete(left_over_id)
 
-        self.instl_obj.notebook.after(1500, self.update_redis_table)
+            focused_item = self.tree.focus()
+            if focused_item != self.prev_focused_item:
+                if focused_item:
+                    focused_item_values = self.tree.item(focused_item)
+                    new_value = ":".join((focused_item_values['text'], str(focused_item_values['values'][0])))
+                    self.tk_vars["DOMAIN_REPO_TO_ACTIVATE"].set(new_value)
+                    uploaded_rep_rev = focused_item_values['values'][1]
+                    activated_rep_rev = int(focused_item_values['values'][2])
+                    self.tk_vars["REPO_REV_TO_ACTIVATE"].set(uploaded_rep_rev)
+                self.prev_focused_item = focused_item
+
+            self.update_redis_table_working_id = None
+            self.start_update_redis_table()
+        else:
+            log.info(f"update_redis_table: no redis connection")
+
+    def start_update_redis_table(self):
+        if not self.update_redis_table_working_id:
+            self.update_redis_table_working_id = self.instl_obj.notebook.after(1500, self.update_redis_table)
+            #log.info("update_redis_table STARTEd")
+
+    def stop_update_redis_table(self):
+        if self.update_redis_table_working_id:
+            self.instl_obj.notebook.after_cancel(self.update_redis_table_working_id)
+            self.update_redis_table_working_id = None
+            #log.info("update_redis_table STOPPEd")
 
     def activate_repo_rev(self):
         try:
-            current_items = self.tree.get_children()
-            domain_repo = self.tk_vars["DOMAIN_REPO_TO_ACTIVATE"].get()
-            if domain_repo in current_items:
-                host = self.tk_vars["REDIS_HOST"].get()
-                repo_rev = self.tk_vars["REPO_REV_TO_ACTIVATE"].get()
-                redis_value = ":".join(('activate', domain_repo, str(repo_rev)))
-                redis_key = ":".join(("wv", host, "waiting_list"))
-                answer = messagebox.askyesno("Activate repo-rev", f"Activate repo-rev {repo_rev} on {domain_repo} ?")
-                if answer:
-                    self.redis_conn.lpush(redis_key, redis_value)
+            if self.redis_conn:
+                current_items = self.tree.get_children()
+                domain_repo = self.tk_vars["DOMAIN_REPO_TO_ACTIVATE"].get()
+                if domain_repo in current_items:
+                    host = self.redis_conn.host
+                    repo_rev = self.tk_vars["REPO_REV_TO_ACTIVATE"].get()
+                    redis_value = config_vars.resolve_str(":".join(('activate', domain_repo, str(repo_rev))))
+                    redis_key   = config_vars.resolve_str(":".join(("$(REDIS_KEYS_PREFIX)", host, "waiting_list")))
+                    answer = messagebox.askyesno("Activate repo-rev", f"Activate repo-rev {repo_rev} on {domain_repo} ?")
+                    if answer:
+                        self.redis_conn.lpush(redis_key, redis_value)
         except Exception as ex:
             print(f"activate_repo_rev exception {ex}")
 
     def remove_redis_key(self, key_config_var, value_config_var=None):
-        self.tk_vars[key_config_var].realign_from_tk_var()
         key_to_remove = config_vars[key_config_var].str()
         self.redis_conn.delete(key_to_remove)
         if value_config_var is not None:
             self.tk_vars[value_config_var].set("")
 
     def lpush_redis_key(self, key_config_var, value_config_var):
-        self.tk_vars[key_config_var].realign_from_tk_var()
-        self.tk_vars[value_config_var].realign_from_tk_var()
         key_to_set = config_vars[key_config_var].str()
         value_to_push = config_vars[value_config_var].str()
         self.redis_conn.lpush(key_to_set, value_to_push)
 
     def get_redis_key(self, key_config_var, result_config_var):
-        self.tk_vars[key_config_var].realign_from_tk_var()
         key_to_get = config_vars[key_config_var].str()
         value = self.redis_conn.get(key_to_get)
         if value is None:
             value = "UNKNOWN KEY"
         config_vars[result_config_var] = value
-        self.tk_vars[result_config_var].realign_from_config_var()
 
     def set_redis_key(self, key_config_var, value_config_var):
-        self.tk_vars[key_config_var].realign_from_tk_var()
-        self.tk_vars[value_config_var].realign_from_tk_var()
         key_to_set = config_vars[key_config_var].str()
         value_to_set = config_vars[value_config_var].str()
         self.redis_conn.set(key_to_set, value_to_set)
-        self.tk_vars[value_config_var].realign_from_config_var()
 
     def create_frame(self, master):  # ActivateFrameController
         super().create_frame(master)
@@ -634,31 +683,27 @@ class ActivateFrameController(FrameController):
         self.frame = Frame(master)
 
         curr_row = 0
-        self.tk_vars["ACTIVATE_CONFIG_FILE"].trace('w', self.update_state)
-        self.create_line_for_file(curr_row=curr_row, curr_column=0, label="Server config", var_name="ACTIVATE_CONFIG_FILE", locate=True, edit=True, check=True)
+        self.tk_vars["ACTIVATE_CONFIG_FILE"].trace('w', functools.partial(self.update_state, who="ACTIVATE_CONFIG_FILE"))
+        self.create_line_for_file(curr_row=curr_row, curr_column=0, label="Server config:", var_name="ACTIVATE_CONFIG_FILE", locate=True, edit=True, check=True)
 
         curr_row += 1
         Label(self.frame, text="Host:").grid(row=curr_row, column=0)
         Label(self.frame, textvariable=self.tk_vars["REDIS_HOST"]).grid(row=curr_row, column=1, sticky=W)
-        self.tk_vars["REDIS_HOST"].trace('w', self.update_state)
 
         curr_row += 1
         Label(self.frame, text="Port:").grid(row=curr_row, column=0)
         Label(self.frame, textvariable=self.tk_vars["REDIS_PORT"]).grid(row=curr_row, column=1, sticky=W)
-        self.tk_vars["REDIS_PORT"].trace('w', self.update_state)
 
         #self.frame.grid_rowconfigure(0)
 
         curr_row += 1
         Label(self.frame, text="Repository:").grid(row=curr_row, column=0)
-        Entry(self.frame, textvariable=self.tk_vars["DOMAIN_REPO_TO_ACTIVATE"]).grid(row=curr_row, column=1, columnspan=1, sticky=W + E)
-        self.tk_vars["DOMAIN_REPO_TO_ACTIVATE"].trace('w', self.update_state)
+        Label(self.frame, textvariable=self.tk_vars["DOMAIN_REPO_TO_ACTIVATE"]).grid(row=curr_row, column=1, columnspan=1, sticky=W + E)
 
         curr_row += 1
         Label(self.frame, text="rep-rev:").grid(row=curr_row, column=0, sticky=W)
         Entry(self.frame, textvariable=self.tk_vars["REPO_REV_TO_ACTIVATE"]).grid(row=curr_row, column=1, columnspan=1, sticky=W + E)
-
-        Button(self.frame, width=7, text="Activate", command=self.activate_repo_rev).grid(row=curr_row, column=2, columnspan=1, sticky=W)
+        Button(self.frame, width=7, text="Activate", command=self.activate_repo_rev).grid(row=curr_row, column=1, columnspan=1, sticky="E")
 
         curr_row += 1
         self.tree = Treeview(self.frame, columns=('major version', 'uploaded', 'activated'))
@@ -668,10 +713,8 @@ class ActivateFrameController(FrameController):
         self.tree.heading('uploaded', text='Uploaded')
         self.tree.column('activated', width=100, anchor='center')
         self.tree.heading('activated', text='Activated')
-        self.tree.grid(row=curr_row, column=1, columnspan=2, sticky=W)
-        self.tree_focused_item = None
-
-        self.update_redis_table()
+        self.tree.grid(row=curr_row, column=1, columnspan=1, sticky=W)
+        self.prev_focused_item = None
 
         return self.frame
 
@@ -683,7 +726,7 @@ class InstlGui(InstlInstanceBase):
         # noinspection PyUnresolvedReferences
         self.read_defaults_file(super().__thisclass__.__name__)
 
-        self.master = Tk()
+        self.master = tk_global_master
         self.master.createcommand('exit', self.quit_app)  # exit from quit menu or Command-Q
         self.master.protocol('WM_DELETE_WINDOW', self.quit_app)  # exit from closing the window
 
@@ -702,21 +745,7 @@ class InstlGui(InstlInstanceBase):
         self.master.destroy()
 
     def set_default_variables(self):
-        client_command_list = list(config_vars["__CLIENT_GUI_CMD_LIST__"])
-        config_vars["CLIENT_GUI_CMD"] = client_command_list[0]
-        admin_command_list = list(config_vars["__ADMIN_GUI_CMD_LIST__"])
-        config_vars["ADMIN_GUI_CMD"] = admin_command_list[0]
-        self.commands_with_run_option_list = list(config_vars["__COMMANDS_WITH_RUN_OPTION__"])
-
-        # create   - $(command_actual_name_$(...)) variables for commands that do not have them in InstlGui.yaml
-        for command in list(config_vars["__CLIENT_GUI_CMD_LIST__"]):
-            actual_command_var = "command_actual_name_"+command
-            if actual_command_var not in config_vars:
-                config_vars[actual_command_var] = command
-        for command in list(config_vars["__ADMIN_GUI_CMD_LIST__"]):
-            actual_command_var = "command_actual_name_"+command
-            if actual_command_var not in config_vars:
-                config_vars[actual_command_var] = command
+        pass
 
     def do_command(self):
         self.set_default_variables()
@@ -729,10 +758,6 @@ class InstlGui(InstlInstanceBase):
         try:
             instl_gui_config_file_name = config_vars["INSTL_GUI_CONFIG_FILE_NAME"].str()
             self.read_yaml_file(instl_gui_config_file_name)
-            # adjust files created with previous versions
-            config_vars["CLIENT_GUI_RUN_BATCH"] = utils.str_to_bool_int(config_vars.get("CLIENT_GUI_RUN_BATCH", "0").str())
-            config_vars["CLIENT_GUI_CREDENTIALS_ON"] = utils.str_to_bool_int(config_vars.get("CLIENT_GUI_CREDENTIALS_ON", "0").str())
-            config_vars["ADMIN_GUI_RUN_BATCH"] = utils.str_to_bool_int(config_vars.get("ADMIN_GUI_RUN_BATCH", "0").str())
         except Exception:
             pass
 
@@ -751,7 +776,7 @@ class InstlGui(InstlInstanceBase):
         tab_name = self.notebook.tab(tab_id, option='text')
         log.info(f"tabChangedEvent: {tab_name}")
         if tab_name in self.tab_name_to_controller.keys():
-            self.tab_name_to_controller[tab_name].update_state()
+            self.tab_name_to_controller[tab_name].update_state(who="tabChangedEvent")
         else:
             log.info(f"""Unknown tab {tab_name}""")
         self.write_history()
@@ -764,13 +789,9 @@ class InstlGui(InstlInstanceBase):
         self.notebook.grid(row=0, column=0)
         self.notebook.bind_all("<<NotebookTabChanged>>", self.tabChangedEvent)
 
-        client_frame = self.client_controller.create_frame(self.notebook)
-        admin_frame =  self.admin_controller.create_frame(self.notebook)
-        #activate_frame = self.activate_controller.create_frame(self.notebook)
-
-        self.notebook.add(client_frame, text='Client')
-        self.notebook.add(admin_frame, text='Admin')
-        #self.notebook.add(activate_frame, text='Activate')
+        self.notebook.add(self.client_controller.create_frame(self.notebook), text='Client')
+        self.notebook.add(self.admin_controller.create_frame(self.notebook), text='Admin')
+        self.notebook.add(self.activate_controller.create_frame(self.notebook), text='Activate')
 
         to_be_selected_tab_name = config_vars["SELECTED_TAB"].str()
         for tab_id in self.notebook.tabs():
